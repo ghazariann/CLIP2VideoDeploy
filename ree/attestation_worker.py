@@ -71,7 +71,7 @@ def validate_attestation():
     try:
         logger.info("Verifying attestation report using snpguest.")
         cmd_verify_attestation = [
-            '/home/ubuntu/snpguest/target/release/snpguest', 'verify', 'attestation', "./", report_path
+            '/home/ubuntu/snpguest/target/release/snpguest', 'verify', 'attestation', "./ree/keys/", report_path
         ]
         result = subprocess.run(cmd_verify_attestation, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         attestation_verification_result = result.stdout.decode().strip()
