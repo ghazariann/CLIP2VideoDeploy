@@ -8,6 +8,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+# from line_profiler import LineProfiler
+
 import logging
 import torch
 from torch import nn
@@ -112,6 +114,7 @@ class CLIP2VideoPreTrainedModel(PreTrainedModel, nn.Module):
         return model
 
 def show_log(task_config, info):
+    return
     if task_config is None or task_config.local_rank == 0:
         logger.warning(info)
 
@@ -186,6 +189,8 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
             embed_dim,
             image_resolution, vision_layers-cut_top_layer, vision_width, vision_patch_size,
             context_length, vocab_size, transformer_width, transformer_heads, transformer_layers-cut_top_layer,
+            text_row_permutation=task_config.TR, text_column_permutation=task_config.TC,
+            visual_row_permutation=task_config.VR, visual_column_permutation=task_config.VC,
         ).float()
         convert_weights(self.clip)
 
@@ -220,8 +225,8 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
             self.frame2t_attention = TransformerClip(width=transformer_width, layers=1, heads=transformer_heads, )
 
         # initialize difference pipeline for 'TDB', use default to use the standard structure
-        if self.temporal_type == 'TDB':
-            self.type_position_embeddings = nn.Embedding(2, cross_config.hidden_size)
+        # if self.temporal_type == 'TDB':
+        self.type_position_embeddings = nn.Embedding(2, cross_config.hidden_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.trans_layernorm = torch.nn.LayerNorm(512)
@@ -339,12 +344,15 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
         if type == 'visual':
             embedding_out, attention_mask = self.get_extra_TAB_embedding(embedding_out, attention_mask)
 
-
+        embedding_out = embedding_out.float()
         soft_weight = F.softmax(embedding_out @ self.weight_center[0:self.centerK].t(), 2)
 
 
         cluster_embedding = soft_weight.unsqueeze(3) * (embedding_out.unsqueeze(2) - self.emb_center[0:self.centerK])
-        cluster_embedding = torch.sum(cluster_embedding * attention_mask, 1)
+        if attention_mask == None:
+            cluster_embedding = torch.sum(cluster_embedding, 1)
+        else:
+            cluster_embedding = torch.sum(cluster_embedding * attention_mask, 1)
 
         cluster_embedding = cluster_embedding / cluster_embedding.norm(dim=-1, keepdim=True)
         cluster_embedding = torch.mean(cluster_embedding, dim=1)
@@ -517,21 +525,29 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
         """
 
         if shaped is False:
-            input_ids = input_ids.view(-1, input_ids.shape[-1])
-            token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
-            attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
-            video_mask = video_mask.view(-1, video_mask.shape[-1])
+            if input_ids is not None:
+                input_ids = input_ids.view(-1, input_ids.shape[-1])
+                token_type_ids = token_type_ids.view(-1, token_type_ids.shape[-1])
+                attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+            if video_mask is not None:
+                video_mask = video_mask.view(-1, video_mask.shape[-1])
 
-            video = torch.as_tensor(video).float()
-            b, pair, bs, ts, channel, h, w = video.shape
-            video = video.view(b * pair * bs * ts, channel, h, w)
-            video_frame = bs * ts
+                video = torch.as_tensor(video).float()
+                b, pair, bs, ts, channel, h, w = video.shape
+                video = video.view(b * pair * bs * ts, channel, h, w)
+                video_frame = bs * ts
 
         # encode text representation
-        sequence_output = self.get_sequence_output(input_ids, token_type_ids, attention_mask, shaped=True)
+        if input_ids is None:
+            sequence_output = None
+        else:
+            sequence_output = self.get_sequence_output(input_ids, token_type_ids, attention_mask, shaped=True)
 
         # encode video representation
-        visual_output = self.get_visual_output(video, video_mask, shaped=True, video_frame=video_frame)
+        if video is None:
+            visual_output = None
+        else:
+            visual_output = self.get_visual_output(video, video_mask, shaped=True, video_frame=video_frame)
 
         return sequence_output, visual_output
 
@@ -635,13 +651,14 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
 
         # calculate the similarity
         logit_scale = self.clip.logit_scale.exp()
+        sequence_output = sequence_output.to(visual_output.dtype)
         retrieve_logits = logit_scale * torch.matmul(sequence_output, visual_output.t())
 
         return retrieve_logits
 
     def temporal_difference_block(self, visual_output, video_mask):
         """Calculate difference-enhanced token and inset into frame token
-        Args:
+        Args:   
             visual_output: embedding
             video_mask: video mask
         Returns:
@@ -702,7 +719,7 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
         seq_indices = torch.stack((seq1_indices[0], seq2_indices[0]))
         for i in range(1, seq_length - 1):
             seq_indices = torch.cat((seq_indices, seq1_indices[i].view(1), seq2_indices[i].view(1)))
-        seq_indices = torch.cat((seq_indices, seq1_indices[seq_length - 1].view(1))).cuda()
+        seq_indices = torch.cat((seq_indices, seq1_indices[seq_length - 1].view(1)))# .cuda()
 
         # insert difference-enhanced token between every adjacent frame token
         visual_output = visual_middle.index_select(1, seq_indices)
@@ -712,7 +729,7 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
 
         return visual_output, frame_position_embeddings, type_embedding, temporal_video_mask
 
-    def _similarity_TDB(self, sequence_output, visual_output, attention_mask, video_mask):
+    def _similarity_TDB(self, sequence_output, visual_output, attention_mask, video_mask, visual_TDB):
         """Calculate the similarity between visual and text representation by adding TDB
         Args:
             sequence_output: embedding
@@ -725,37 +742,45 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
 
         sequence_output, visual_output = sequence_output.contiguous(), visual_output.contiguous()
 
-        # obtain the basic embedding
-        visual_output_original = visual_output # batch_size * 12 * 512
+        if visual_TDB is not None:
+            # print('TDB is cached')
+            visual_output = visual_TDB
+        else:
+            # print('TDB is not cached')
+            # obtain the basic embedding
+            visual_output_original = visual_output # batch_size * 12 * 512
 
-        # difference-enhanced token obtained by TDB
-        visual_output, frame_position_embeddings, type_embedding, temporal_video_mask = self.temporal_difference_block(
-            visual_output, video_mask)
+            # difference-enhanced token obtained by TDB
+            visual_output, frame_position_embeddings, type_embedding, temporal_video_mask = self.temporal_difference_block(visual_output, video_mask)
 
-        # obtain the output of transformer
-        visual_output = visual_output + frame_position_embeddings + type_embedding # batch_size * 12 * 512
-        extended_video_mask = (1.0 - temporal_video_mask.unsqueeze(1)) * -1000000.0 # batch_size * 1* 12
-        extended_video_mask = extended_video_mask.expand(-1, temporal_video_mask.size(1), -1) # batch_size * 12 * 12
-        visual_output = visual_output.permute(1, 0, 2)  # NLD -> LND # 12 * batch_size * 512
-        visual_output = self.transformerClip(visual_output, extended_video_mask) #12 * batch_size * 512
-        visual_output = visual_output.permute(1, 0, 2)  # LND -> NLD # batch_size * 12 * 512
+            # obtain the output of transformer
+            visual_output = visual_output + frame_position_embeddings + type_embedding # batch_size * 12 * 512
+            extended_video_mask = (1.0 - temporal_video_mask.unsqueeze(1)) * -1000000.0 # batch_size * 1* 12
+            extended_video_mask = extended_video_mask.expand(-1, temporal_video_mask.size(1), -1) # batch_size * 12 * 12
+            visual_output = visual_output.permute(1, 0, 2)  # NLD -> LND # 12 * batch_size * 512
+            visual_output = self.transformerClip(visual_output, extended_video_mask) #12 * batch_size * 512
+            visual_output = visual_output.permute(1, 0, 2)  # LND -> NLD # batch_size * 12 * 512
 
-        # select the output of frame token for final video representation
-        frame_position_id = torch.arange(start=0, end=visual_output.size()[1], step=2, dtype=torch.long,
-                                         device=visual_output.device)
-        visual_output = visual_output[:, frame_position_id, :]
-        visual_output = visual_output + visual_output_original
-        visual_output = visual_output / visual_output.norm(dim=-1, keepdim=True)
+            # torch.Size([64, 23, 512])
 
-        # mean pooling for video representation
-        video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1) # batch_size * 12 * 1
-        visual_output = visual_output * video_mask_un
-        video_mask_un_sum = torch.sum(video_mask_un, dim=1, dtype=torch.float)
-        video_mask_un_sum[video_mask_un_sum == 0.] = 1.
-        visual_output = torch.sum(visual_output, dim=1) / video_mask_un_sum
+            # select the output of frame token for final video representation
+            frame_position_id = torch.arange(start=0, end=visual_output.size()[1], step=2, dtype=torch.long,
+                                            device=visual_output.device)
+            visual_output = visual_output[:, frame_position_id, :]
+            visual_output = visual_output + visual_output_original
+            visual_output = visual_output / visual_output.norm(dim=-1, keepdim=True)
 
-        # obtain the normalized video embedding
-        visual_output = visual_output / visual_output.norm(dim=-1, keepdim=True)
+            # torch.Size([64, 12, 512])
+
+            # mean pooling for video representation
+            video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1) # batch_size * 12 * 1
+            visual_output = visual_output * video_mask_un
+            video_mask_un_sum = torch.sum(video_mask_un, dim=1, dtype=torch.float)
+            video_mask_un_sum[video_mask_un_sum == 0.] = 1.
+            visual_output = torch.sum(visual_output, dim=1) / video_mask_un_sum
+
+            # obtain the normalized video embedding
+            visual_output = visual_output / visual_output.norm(dim=-1, keepdim=True) # torch.Size([64, 512])
 
         # obtain the normalized sequence embedding
         sequence_output = sequence_output.squeeze(1)
@@ -763,6 +788,7 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
 
         # calculate the similarity
         logit_scale = self.clip.logit_scale.exp()
+        sequence_output = sequence_output.float()
         retrieve_logits = logit_scale * torch.matmul(sequence_output, visual_output.t())
 
         return retrieve_logits
@@ -794,9 +820,8 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
                                                sim_type=self.sim_type)
 
         return retrieve_logits
-
-
-    def get_inference_logits(self, sequence_output, visual_output, attention_mask, video_mask, shaped=False):
+    
+    def get_inference_logits(self, sequence_output, visual_output, attention_mask, video_mask, visual_TAB=None, visual_TDB=None, shaped=False):
         """get the similarity for global and local representation during inference
          Args:
              sequence_output: embedding
@@ -819,7 +844,7 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
 
         if self.sim_type == 'seqTransf' and self.temporal_type == 'TDB':
             # adopting temporal transformer with TDB block
-            retrieve_logits = self._similarity_TDB(sequence_output, visual_output, attention_mask, video_mask)
+            retrieve_logits = self._similarity_TDB(sequence_output, visual_output, attention_mask, video_mask, visual_TDB)
         else:
             # adopting mean pooling or use temporal transformer to aggregate the video representation
             assert self.sim_type in ["meanP", "seqTransf"]
@@ -830,9 +855,12 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
         if self.center_type == 'TAB':
 
             # calculate the aligned video representation
-            video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1)
-            video_mask_un = video_mask_un.unsqueeze(-1)
-            cluster_visual_output = self.get_TAB_embedding(visual_output, video_mask_un, type='visual')
+            if visual_TAB is not None:
+                cluster_visual_output = visual_TAB
+            else:
+                video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1)
+                video_mask_un = video_mask_un.unsqueeze(-1)
+                cluster_visual_output = self.get_TAB_embedding(visual_output, video_mask_un, type='visual')
 
             # calculate the aligned text representation
             attention_mask_un = attention_mask.to(dtype=torch.float).unsqueeze(-1)
@@ -848,3 +876,56 @@ class CLIP2Video(CLIP2VideoPreTrainedModel):
 
         return retrieve_logits, contrastive_direction
 
+    def get_inference_logits_image(self, sequence_output, visual_output, video_mask, visual_TAB=None, visual_TDB=None, shaped=False):
+            """get the similarity for global and local representation during inference
+            Args:
+                sequence_output: embedding
+                visual_output: embedding
+                video_mask: video mask
+                shaped: whether to shape the dimension
+            Returns:
+                text_out:output embedding [1,512]
+                video_out: output embedding [1,512]
+            """
+            if shaped is False:
+                # attention_mask = attention_mask.view(-1, attention_mask.shape[-1])
+                video_mask = video_mask.view(-1, video_mask.shape[-1])
+
+            contrastive_direction = ()
+
+            if self.center_type == 'TAB':
+                sequence_output, sequence_hidden_output = sequence_output
+                # torch.Size([1, 512])
+                # torch.Size([1, 32, 512])
+
+            if self.sim_type == 'seqTransf' and self.temporal_type == 'TDB':
+                # adopting temporal transformer with TDB block
+                retrieve_logits = self._similarity_TDB(sequence_output, visual_output, None, video_mask, visual_TDB)
+            else:
+                # adopting mean pooling or use temporal transformer to aggregate the video representation
+                assert self.sim_type in ["meanP", "seqTransf"]
+                retrieve_logits = self._similarity(sequence_output, visual_output, None, video_mask,
+                                                sim_type=self.sim_type)
+
+            # calculate the similarity aggregated in TAB block
+            if self.center_type == 'TAB':
+
+                # calculate the aligned video representation
+                if visual_TAB is not None:
+                    # print('TAB is cached')
+                    cluster_visual_output = visual_TAB
+                else:
+                    video_mask_un = video_mask.to(dtype=torch.float).unsqueeze(-1)
+                    video_mask_un = video_mask_un.unsqueeze(-1)      
+                    cluster_visual_output = self.get_TAB_embedding(visual_output, video_mask_un, type='visual')
+
+                # calculate the aligned text representation
+                cluster_sequence_output = self.get_TAB_embedding(sequence_hidden_output, None, type='sequence')
+
+                logit_scale = self.clip.logit_scale.exp()
+                sim_matrix = logit_scale * torch.matmul(cluster_sequence_output, cluster_visual_output.t())
+
+                retrieve_logits = retrieve_logits * self.center_weight  + sim_matrix * ( 1 - self.center_weight)
+
+
+            return retrieve_logits, contrastive_direction
