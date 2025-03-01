@@ -1,0 +1,73 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Flask Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/temp.py", 
+            "python": "${workspaceFolder}/venv/bin/python",  
+            "args": [],
+            "jinja": true, 
+            "console": "integratedTerminal",
+            "env": {
+                "FLASK_APP": "temp.py", 
+                "FLASK_ENV": "development" 
+            }
+        },
+        {
+            "name": "dist",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/app_i2v.py",
+            "python": "${workspaceFolder}/venv/bin/python",
+            "args": [],
+            "jinja": true,
+            "justMyCode": true,
+            "console": "integratedTerminal",
+        },
+        {
+            "name": "curr",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/i2v_retrieval.py",
+            "python": "${workspaceFolder}/venv/bin/python",
+            "args": [],
+            "jinja": true,
+            "justMyCode": true,
+            "console": "integratedTerminal",
+        },
+        {
+            "name": "i2i_dist",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/i2i_app_dist_enc.py",
+            "env": {
+                "FLASK_APP": "i2i_app_dist_enc.py",
+                "FLASK_ENV": "development"
+            },
+            "python": "/home/ubuntu/ST-main/myenv/bin/python",
+            "args": [],
+            "jinja": true,
+            "justMyCode": true,
+            "console": "integratedTerminal",
+            // "preLaunchTask": "sudo /home/ubuntu/ST-main/myenv/bin/python ${workspaceFolder}/app_dist.py"
+        },
+        {
+            "name": "Python: Flask (app.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/app.py",
+            "env": {
+                "FLASK_APP": "app.py",
+                "FLASK_ENV": "development"
+            },
+            "python": "/home/ubuntu/ST-main/myenv/bin/python",  // Replace with your actual path
+            "args": [],
+            "jinja": true,
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        }
+    ]
+}

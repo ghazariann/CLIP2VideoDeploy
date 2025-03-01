@@ -1,0 +1,9 @@
+venv/
+__pycache__
+retrieval_text
+retrieval_images
+pretrained_weights
+data
+keys/*.pt
+logs
+server.log
