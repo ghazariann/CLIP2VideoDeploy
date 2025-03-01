@@ -170,11 +170,11 @@ class VATEXENGLISH_multi_sentence_dataLoader(Dataset):
             video_mask: mask of video
         """
 
-        video_mask = np.zeros((1, self.max_frames), dtype=np.long)
+        video_mask = np.zeros((1, self.max_frames), dtype=np.longlong)
 
         # 1 x L x 1 x 3 x H x W
         video = np.zeros((1, self.max_frames, 1, 3,
-                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float)
+                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float64)
 
         # video_path
         video_path = os.path.join(self.features_path, video_id)

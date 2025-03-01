@@ -9,12 +9,14 @@ sys.path.append(os.path.dirname(__file__) + os.sep + '../')
 
 import torch
 from torch.utils.data import DataLoader
-from dataloaders.dataloader_msrvtt_frame import MSRVTT_single_sentence_dataLoader
+from dataloaders.dataloader_msrvtt_frame import MSRVTT_single_sentence_dataLoader, MSRVTT_single_sentence_dataLoader_video, MSRVTT_single_sentence_dataLoader_text, MSRVTT_single_sentence_dataLoader_image
 from dataloaders.dataloader_msrvtt_frame import MSRVTT_multi_sentence_dataLoader
 from dataloaders.dataloader_msvd_frame import MSVD_multi_sentence_dataLoader
 from dataloaders.dataloader_vatexEnglish_frame import VATEXENGLISH_multi_sentence_dataLoader
 from dataloaders.dataloader_msrvttfull_frame import MSRVTTFULL_multi_sentence_dataLoader
 
+from torchvision import transforms
+from PIL import Image
 
 def dataloader_vatexEnglish_train(args, tokenizer):
     """return dataloader for training VATEX with English annotations
@@ -239,4 +241,83 @@ def dataloader_msvd_test(args, tokenizer, subset="test"):
     )
     return dataloader, len(msvd_test_set)
 
+def dataloader_msrvtt_test_video(args):
+    """return dataloader for testing 1k-A protocol
+    Args:
+        args: hyper-parameters
+    Returns:
+        dataloader: dataloader
+        len(msrvtt_test_set): length
+    """
 
+    msrvtt_test_set = MSRVTT_single_sentence_dataLoader_video(
+        csv_path=args.video_val_csv,
+        features_path=args.features_path,
+        feature_framerate=args.feature_framerate,
+        max_frames=args.max_frames,
+    )
+
+    dataloader = DataLoader(
+        msrvtt_test_set,
+        batch_size=args.batch_size_val,
+        num_workers=args.num_thread_reader,
+        shuffle=False,
+        drop_last=False,
+    )
+    return dataloader, len(msrvtt_test_set)
+
+def dataloader_msrvtt_test_text(args, tokenizer):
+    """return dataloader for testing 1k-A protocol
+    Args:
+        args: hyper-parameters
+        tokenizer: tokenizer
+    Returns:
+        dataloader: dataloader
+        len(msrvtt_test_set): length
+    """
+
+    msrvtt_test_set = MSRVTT_single_sentence_dataLoader_text(
+        csv_path=args.text_val_csv,
+        max_words=args.max_words,
+        tokenizer=tokenizer,
+    )
+
+    dataloader = DataLoader(
+        msrvtt_test_set,
+        batch_size=args.batch_size_val,
+        num_workers=args.num_thread_reader,
+        shuffle=False,
+        drop_last=False,
+    )
+    return dataloader, len(msrvtt_test_set)
+
+def dataloader_msrvtt_test_image(args, img_paths):
+    """return dataloader for testing 1k-A protocol
+    Args:
+        args: hyper-parameters
+    Returns:
+        dataloader: dataloader
+        len(msrvtt_test_set): length
+    """
+
+    transform = transforms.Compose([
+        transforms.Resize(224, interpolation=Image.BICUBIC),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+    ])
+    
+    msrvtt_test_set = MSRVTT_single_sentence_dataLoader_image(
+        img_paths=img_paths, 
+        transform=transform,
+    )
+
+    dataloader = DataLoader(
+        msrvtt_test_set,
+        batch_size=args.batch_size_val,
+        num_workers=args.num_thread_reader,
+        shuffle=False,
+        drop_last=False,
+    )
+
+    return dataloader, len(msrvtt_test_set)

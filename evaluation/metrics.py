@@ -43,13 +43,22 @@ def tensor_text_to_video_metrics(sim_tensor, top_k = [1,5,10]):
     first_argsort = torch.argsort(stacked_sim_matrices, dim = -1, descending= True)
     second_argsort = torch.argsort(first_argsort, dim = -1, descending= False)
 
+    # print(sim_tensor.shape)
+    # print(stacked_sim_matrices.shape)
+    # print(first_argsort.shape)
+    # print(second_argsort.shape)
     # Extracts ranks i.e diagonals
     ranks = torch.flatten(torch.diagonal(second_argsort, dim1 = 1, dim2 = 2))
+    # print(ranks.shape)
+    # print(ranks)
 
     # Now we need to extract valid ranks, as some belong to inf padding values
     permuted_original_data = torch.flatten(torch.diagonal(sim_tensor, dim1 = 0, dim2 = 2))
     mask = ~ torch.logical_or(torch.isinf(permuted_original_data), torch.isnan(permuted_original_data))
     valid_ranks = ranks[mask]
+    # print(valid_ranks.shape)
+    # print(valid_ranks)
+    # exit(-1)
     # A quick dimension check validates our results, there may be other correctness tests pending
     # Such as dot product localization, but that is for other time.
     #assert int(valid_ranks.shape[0]) ==  sum([len(text_dict[k]) for k in text_dict])

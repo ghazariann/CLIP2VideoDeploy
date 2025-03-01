@@ -11,6 +11,7 @@ import pandas as pd
 import json
 from dataloaders.rawframe_util import RawFrameExtractor
 
+from PIL import Image
 
 class MSRVTT_single_sentence_dataLoader(Dataset):
     """MSRVTT dataset loader for single sentence
@@ -116,11 +117,11 @@ class MSRVTT_single_sentence_dataLoader(Dataset):
             video_mask: mask of video
         """
 
-        video_mask = np.zeros((1, self.max_frames), dtype=np.long)
+        video_mask = np.zeros((1, self.max_frames), dtype=np.longlong)
 
         # 1 x L x 1 x 3 x H x W
         video = np.zeros((1, self.max_frames, 1, 3,
-                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float)
+                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float64)
 
         # video_path
         video_path = os.path.join(self.features_path, video_id)
@@ -299,11 +300,11 @@ class MSRVTT_multi_sentence_dataLoader(Dataset):
             video_mask: mask of video
         """
 
-        video_mask = np.zeros((1, self.max_frames), dtype=np.long)
+        video_mask = np.zeros((1, self.max_frames), dtype=np.longlong)
 
         # 1 x L x 1 x 3 x H x W
         video = np.zeros((1, self.max_frames, 1, 3,
-                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float)
+                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float64)
 
         # video_path
         video_path = os.path.join(self.features_path, video_id)
@@ -358,3 +359,105 @@ class MSRVTT_multi_sentence_dataLoader(Dataset):
 
         return pairs_text, pairs_mask, pairs_segment, video, video_mask
 
+class MSRVTT_single_sentence_dataLoader_text(Dataset):
+    def __init__(self, csv_path, tokenizer, max_words=30):
+        self.data = pd.read_csv(csv_path)
+        self.max_words = max_words
+        self.tokenizer = tokenizer
+
+        # start and end token
+        self.SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
+                              "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
+
+    def __len__(self):
+        return len(self.data)
+
+    def _get_text(self, caption):
+        words = self.tokenizer.tokenize(caption)
+        words = [self.SPECIAL_TOKEN["CLS_TOKEN"]] + words
+        total_length_with_CLS = self.max_words - 1
+        if len(words) > total_length_with_CLS:
+            words = words[:total_length_with_CLS]
+        words = words + [self.SPECIAL_TOKEN["SEP_TOKEN"]]
+        input_ids = self.tokenizer.convert_tokens_to_ids(words)
+        input_mask = [1] * len(input_ids)
+        segment_ids = [0] * len(input_ids)
+        while len(input_ids) < self.max_words:
+            input_ids.append(0)
+            input_mask.append(0)
+            segment_ids.append(0)
+
+        assert len(input_ids) == self.max_words
+        assert len(input_mask) == self.max_words
+        assert len(segment_ids) == self.max_words
+        pairs_text = np.array(input_ids)
+        pairs_mask = np.array(input_mask)
+        pairs_segment = np.array(segment_ids)
+
+        return pairs_text, pairs_mask, pairs_segment
+
+    def __getitem__(self, idx):
+        sentence = self.data['sentence'].values[idx]
+        pairs_text, pairs_mask, pairs_segment = self._get_text(sentence)
+        
+        return pairs_text, pairs_mask, pairs_segment
+
+
+class MSRVTT_single_sentence_dataLoader_video(Dataset):
+    def __init__(self, csv_path, features_path, feature_framerate=1.0, max_frames=100, image_resolution=224):
+        self.data = pd.read_csv(csv_path)
+        self.features_path = features_path
+        self.feature_framerate = feature_framerate
+        self.max_frames = max_frames
+
+        # frame extractor to sample frames from video
+        self.frameExtractor = RawFrameExtractor(framerate=feature_framerate, size=image_resolution)
+
+    def __len__(self):
+        return len(self.data)
+
+    def _get_rawvideo(self, video_id):
+        video_mask = np.zeros((1, self.max_frames), dtype=np.longlong)
+        video = np.zeros((1, self.max_frames, 1, 3,
+                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float64)
+        video_path = os.path.join(self.features_path, video_id)
+        try:
+            raw_video_data = self.frameExtractor.get_video_data(video_path, self.max_frames)
+            raw_video_data = raw_video_data['video']
+            if len(raw_video_data.shape) > 3:
+                raw_video_data_clip = raw_video_data
+                raw_video_slice = self.frameExtractor.process_raw_data(raw_video_data_clip)
+                if self.max_frames < raw_video_slice.shape[0]:
+                    sample_indx = np.linspace(0, raw_video_slice.shape[0] - 1, num=self.max_frames, dtype=int)
+                    video_slice = raw_video_slice[sample_indx,...]
+                else:
+                    video_slice = raw_video_slice
+                slice_len = video_slice.shape[0]
+                video_mask[0][:slice_len] = [1] * slice_len
+                video[0][:slice_len,...] = video_slice
+            return video, video_mask
+        except Exception as e:
+            print(f"get raw video error: {e}, skip it.")
+            return None, None
+
+    def __getitem__(self, idx):
+        video_id = self.data['video_id'].values[idx]
+        video, video_mask = self._get_rawvideo(video_id)
+        return video, video_mask
+
+class MSRVTT_single_sentence_dataLoader_image(Dataset):
+    def __init__(self, img_paths, transform=None):
+        self.img_paths = img_paths
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.img_paths[idx]
+        # 从路径中提取出名称部分
+        name = str(img_path.split('/')[-1].split('.')[0])
+        img = Image.open(img_path).convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+        return name, img

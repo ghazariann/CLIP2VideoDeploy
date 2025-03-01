@@ -106,7 +106,14 @@ class MSVD_multi_sentence_dataLoader(Dataset):
         self.SPECIAL_TOKEN = {"CLS_TOKEN": "<|startoftext|>", "SEP_TOKEN": "<|endoftext|>",
                               "MASK_TOKEN": "[MASK]", "UNK_TOKEN": "[UNK]", "PAD_TOKEN": "[PAD]"}
 
-
+        # 新增代码，用于构建查找表
+        self.name_mapping = {}
+        mapping_file = "data/msvd_data/msvd_mapping.txt"
+        with open(mapping_file, 'r') as f:
+            for line in f.readlines():
+                parts = line.strip().split()
+                if len(parts) == 2:
+                    self.name_mapping[parts[0]] = parts[1]
 
     def __len__(self):
         """length of data loader
@@ -175,14 +182,17 @@ class MSVD_multi_sentence_dataLoader(Dataset):
             video_mask: mask of video
         """
 
-        video_mask = np.zeros((1, self.max_frames), dtype=np.long)
+        video_mask = np.zeros((1, self.max_frames), dtype=np.longlong)
 
         # 1 x L x 1 x 3 x H x W
         video = np.zeros((1, self.max_frames, 1, 3,
-                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float)
+                          self.frameExtractor.size, self.frameExtractor.size), dtype=np.float64)
 
         # video_path
-        video_path = os.path.join(self.features_path, video_id)
+        # 使用查找表获得real_video_id
+        real_video_id = self.name_mapping.get(video_id, video_id)
+        video_path = os.path.join(self.features_path, real_video_id)
+        # video_path = os.path.join(self.features_path, video_id)
 
         # get sampling frames
         raw_video_data = self.frameExtractor.get_video_data(video_path, self.max_frames)
@@ -229,7 +239,7 @@ class MSVD_multi_sentence_dataLoader(Dataset):
         # obtain text data
         pairs_text, pairs_mask, pairs_segment = self._get_text(caption)
 
-        #obtain video data
+        # obtain video data
         video, video_mask = self._get_rawvideo(video_id)
 
         return pairs_text, pairs_mask, pairs_segment, video, video_mask

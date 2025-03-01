@@ -10,6 +10,18 @@ import os
 import torch
 from torch import nn
 
+import time
+
+def getPi_Random(dim=197):
+    p = torch.eye(dim, dtype=torch.float)
+    generator = torch.Generator()
+    generator.manual_seed(int(time.time_ns()))
+    mask = torch.randperm(dim, generator = generator)
+    p = p[mask]
+    # p.shape = (H, W)
+    ip = torch.transpose(p, 0, 1)
+    return p, ip
+
 # if the pretrained model doesn't exist, please download the model from the link of openai
 # in this project, we adopt ViT-B/32 for pre-training
 _MODELS = {
@@ -109,7 +121,7 @@ class VisualTransformer(nn.Module):
         output_dim: the final output of ViT
     """
 
-    def __init__(self, input_resolution, patch_size, width, layers, heads, output_dim):
+    def __init__(self, input_resolution, patch_size, width, layers, heads, output_dim, visual_row_permutation, visual_column_permutation):
 
         super().__init__()
         self.input_resolution = input_resolution
@@ -127,6 +139,12 @@ class VisualTransformer(nn.Module):
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
+        # for permutation
+        self.visual_row_permutation = visual_row_permutation
+        self.visual_column_permutation = visual_column_permutation
+        if visual_row_permutation:
+            self.p = None
+            self.ip = None
 
     def forward(self, x, video_frame=-1):
 
@@ -150,6 +168,46 @@ class VisualTransformer(nn.Module):
         #     x = x @ self.proj
 
         return x
+    
+    def F1_forward(self, x):
+        x = x.half()
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat(
+            [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+             x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.positional_embedding.to(x.dtype)
+        x = self.ln_pre(x)
+
+        # row permutation
+        if self.visual_row_permutation:
+            # get row permutation matrix randomly every batch
+            print('1111111111111111111111')
+            self.p, self.ip = getPi_Random(50)
+            self.p, self.ip = self.p.half().to("cuda"), self.ip.half().to("cuda")
+            x = torch.matmul(self.p, x)
+
+        return x
+
+    def Backbone_forward(self, x):
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x, video_frame=-1)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        return x
+
+    def F2_forward(self, hidden):
+        # row depermuation
+        if self.visual_row_permutation:
+            hidden = torch.matmul(self.ip, hidden)
+
+        hidden = self.ln_post(hidden)
+        if self.proj is not None:
+            hidden = hidden @ self.proj
+        x = hidden[:, 0, :]
+        return x, hidden
 
 
 class CLIP(nn.Module):
@@ -176,6 +234,11 @@ class CLIP(nn.Module):
                  transformer_width,
                  transformer_heads,
                  transformer_layers,
+                 # permutation
+                 text_row_permutation=False,
+                 text_column_permutation=False,
+                 visual_row_permutation=False,
+                 visual_column_permutation=False,
                  ):
         super().__init__()
 
@@ -190,7 +253,9 @@ class CLIP(nn.Module):
             width=vision_width,
             layers=vision_layers,
             heads=vision_heads,
-            output_dim=embed_dim
+            output_dim=embed_dim,
+            visual_row_permutation=visual_row_permutation,
+            visual_column_permutation=visual_column_permutation,
         )
 
         # set the text transformer
@@ -210,6 +275,14 @@ class CLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]))
 
         self.initialize_parameters()
+
+        # permutation
+        self.text_row_permutation = text_row_permutation
+        self.text_column_permutation = text_column_permutation
+        # get column permutation matrix by key
+        if self.text_column_permutation:
+            self.pc, self.ipc = torch.load('keys/key.pt')[5], torch.load('keys/unkey.pt')[5]
+            self.pc, self.ipc = self.pc.cuda(), self.ipc.cuda()
 
     def initialize_parameters(self):
         nn.init.normal_(self.token_embedding.weight, std=0.02)
@@ -305,6 +378,45 @@ class CLIP(nn.Module):
             return x, hidden
 
         return x
+
+    def encode_text_F1(self, input_ids, input_mask, segment_ids):
+        # reshape the input_ids, input_mask, segment_ids
+        input_ids = input_ids.view(-1, input_ids.shape[-1])
+        input_mask = input_mask.view(-1, input_mask.shape[-1])
+        segment_ids = segment_ids.view(-1, segment_ids.shape[-1])
+
+        # embedding
+        x = self.token_embedding(input_ids).type(self.dtype) 
+        pos_emd = self.positional_embedding[:x.size(1), :].type(self.dtype)
+        embedding_output = x + pos_emd
+
+        # colomn permutation
+        if self.text_column_permutation:
+            print('1111111111111111111111')
+            self.ipc = self.ipc.to(self.dtype)
+            embedding_output = torch.matmul(embedding_output, self.ipc)
+
+        return embedding_output, input_ids, input_mask, segment_ids
+
+    def encode_text_Backbone(self, embedding_output):
+        embedding_output = embedding_output.permute(1, 0, 2)  # NLD -> LND
+        encoder_outputs = self.transformer(embedding_output)
+        encoder_outputs = encoder_outputs.permute(1, 0, 2)  # LND -> NLD
+        return encoder_outputs
+    
+    def encode_text_F2(self, sequence_output, text):
+        # colomn depermutation
+        if self.text_column_permutation:
+            self.pc = self.pc.to(self.dtype)
+            sequence_output = torch.matmul(sequence_output, self.pc)
+
+        # take features from the eot embedding
+        hidden = self.ln_final(sequence_output).type(self.dtype) @ self.text_projection
+        outputs = hidden[torch.arange(hidden.shape[0]), text.argmax(dim=-1)]
+        outputs = outputs.float()
+        hidden = hidden.float()
+        hidden = hidden.view(text.size(0), -1, hidden.size(-1))
+        return outputs, hidden
 
     def forward(self, image, text):
         """forward method for CLIP

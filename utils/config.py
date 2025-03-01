@@ -13,6 +13,8 @@ def get_args(description='CLIP2Video on Dideo-Text Retrieval Task'):
     # https://github.com/ArrowLuo/CLIP4Clip/blob/668334707c493a4eaee7b4a03b2dae04915ce170/main_task_retrieval.py#L457
     parser.add_argument("--do_eval", action='store_true', help="Whether to run eval on the dev set.")
     parser.add_argument('--val_csv', type=str, default='data/.val.csv', help='')
+    parser.add_argument('--video_val_csv', type=str, default='data/.val.csv', help='')
+    parser.add_argument('--text_val_csv', type=str, default='data/.val.csv', help='')
     parser.add_argument('--data_path', type=str, default='data/caption.pickle', help='data pickle file path')
     parser.add_argument('--features_path', type=str, default='data/videos_feature.pickle', help='feature path')
     parser.add_argument('--num_thread_reader', type=int, default=1, help='')
